@@ -1,14 +1,31 @@
 #pragma once
 
-#include <iostream>
 #include <tuple>
 #include <functional>
+#include <array>
+#include <utility>
+
+// TODO compile time random: mklimenko.github.io/english/2018/06/04/constexpr-random/
+
+// These two lines are VERY different in my code.
+// If every layer uses the first line for its forward declaration, then the stack gets messed up.
+//
+// 1:  auto inline forward(const T& x) const;
+//
+// 2:  inline typename os::tensor forward(const typename is::tensor& x) const;
+//
+// The problem here is mentioned in Eigen's documentation.
+// Search for "eigen3 common pitfalls" and read the whole article.
+
+// I think the constinit keywords are not neccessary
+
+// layerid forces every instantiation of a layer to be a different type
 
 #include "eigen/Eigen/Core"
 #include "eigen/Eigen/../unsupported/Eigen/CXX11/Tensor"
 using Eigen::Sizes;
 template<int... ints>
-using Tensor = Eigen::TensorFixedSize<float,Sizes<ints...>>;
+using Tensor = Eigen::TensorFixedSize<double,Sizes<ints...>>;
 
 template<int ... ints>
 struct Shape {
@@ -34,98 +51,58 @@ std::ostream& operator<<(std::ostream& os, const Shape<ints...>& s) {
 // #define EIGEN_RUNTIME_NO_MALLOC
 // Eigen::internal::set_is_malloc_allowed(false);
 
-template<class F> auto comp(F f) {
-   return [f](const auto& x) { return f.forward(x); };
-}
-template<class F, class G, class... Funcs> auto comp(F f, G g, Funcs... funcs) {
-   return [f,g,funcs...](const auto& x) { return f.forward(comp(g, funcs...)(x)); };
-}
-
 template<typename... Args> struct TypeStack {
     template<typename T> using push = TypeStack<T, Args...>;
 };
 
-template<typename vec, typename ishape, typename... Args>
+template<int i, typename vec, typename ishape, typename... Args>
 struct recurse {
     using type = vec;
     using finaloshape = ishape;
 };
-template<typename vec, typename ishape, typename layerType, typename... Args>
-struct recurse<vec, ishape, layerType, Args...> {
-private:
+template<int i, typename vec, typename ishape, typename layerType, typename... Args>
+struct recurse<i, vec, ishape, layerType, Args...> {
+  private:
     using oshape = typename layerType::template oshape<ishape>;
-    using layerFullType = typename layerType::template type<ishape, oshape>;
+    using layerFullType = typename layerType::template type<ishape, oshape, i>;
     using vec_ = typename vec::template push<layerFullType>;
-    using rec = recurse<vec_, oshape, Args...>;
+    using rec = recurse<i+1, vec_, oshape, Args...>;
 
-public:
+  public:
     using type = typename rec::type;
     using finaloshape = typename rec::finaloshape;
 };
 
 template<typename... Args> class NetworkReal {};
-template<typename is, typename os, typename... Args> class NetworkReal<is, os, TypeStack<Args...>> {
-    std::tuple<Args...> layers{Args()...};
+template<typename is_, typename os_, typename... Args> class NetworkReal<is_, os_, TypeStack<Args...>> {
+    constinit static inline std::tuple<Args...> layers{Args()...};
     NetworkReal(NetworkReal&) = delete;
     NetworkReal(const NetworkReal&);
     NetworkReal& operator=(const NetworkReal&);
-public:
-    NetworkReal() = default;
-
-    // std::function<typename os::tensor(const typename is::tensor&)>
-    //f{std::apply([](auto&& ... layer){ return comp(layer...); }, layers)};
-
-    typename os::tensor f(const typename is::tensor& x) {
-
-    // template<int i=0, class T>
-    // auto f(T&& x) {
-    //     if constexpr(i == sizeof...(Args))
-    //       return x;
-    //     else
-    //       return std::get<i>(layers).forward(f<i+1>(x));
-
-        if constexpr (sizeof...(Args) == 2) {
-          return std::get<0>(layers).forward(
-                 std::get<1>(layers).forward(x));
-        } else if constexpr (sizeof...(Args) == 3) {
-          return std::get<0>(layers).forward(
-                 std::get<1>(layers).forward(
-                 std::get<2>(layers).forward(x)));
-        } else if constexpr (sizeof...(Args) == 4) {
-          return std::get<0>(layers).forward(
-                 std::get<1>(layers).forward(
-                 std::get<2>(layers).forward(
-                 std::get<3>(layers).forward(x))));
-        } else if constexpr (sizeof...(Args) == 5) {
-          return std::get<0>(layers).forward(
-                 std::get<1>(layers).forward(
-                 std::get<2>(layers).forward(
-                 std::get<3>(layers).forward(
-                 std::get<4>(layers).forward(x)))));
-        } else if constexpr (sizeof...(Args) == 6) {
-          return std::get<0>(layers).forward(
-                 std::get<1>(layers).forward(
-                 std::get<2>(layers).forward(
-                 std::get<3>(layers).forward(
-                 std::get<4>(layers).forward(
-                 std::get<5>(layers).forward(x))))));
-        } else if constexpr (sizeof...(Args) == 7) {
-          return std::get<0>(layers).forward(
-                 std::get<1>(layers).forward(
-                 std::get<2>(layers).forward(
-                 std::get<3>(layers).forward(
-                 std::get<4>(layers).forward(
-                 std::get<5>(layers).forward(
-                 std::get<6>(layers).forward(x)))))));
-        }
-
-        // comp(std::get<0>(layers),
-        // std::get<1>(layers),
-        // std::get<2>(layers))(x);
+  public:
+    using is = is_;
+    using os = os_;
+    consteval NetworkReal() = default;
+    void init() {
+        std::apply([](auto&& ... layer){ (..., layer.init()); }, layers);
+    }
+    template<int i=0, class T>
+    inline auto forward(const T& x) {
+       if constexpr(i >= sizeof...(Args))
+         return x;
+       else
+         return std::get<i>(layers).forward(forward<i+1>(x));
+    }
+    template<int i=sizeof...(Args)-1, class T>
+    inline auto backward(const T& x) {
+       if constexpr(i < 0)
+         return x;
+       else
+         return std::get<i>(layers).backward(backward<i-1>(x));
     }
 };
 
 template<typename is, typename... Args>
 using Network = NetworkReal<is,
-    typename recurse<TypeStack<>, is, Args...>::finaloshape,
-    typename recurse<TypeStack<>, is, Args...>::type>;
+    typename recurse<0, TypeStack<>, is, Args...>::finaloshape,
+    typename recurse<0, TypeStack<>, is, Args...>::type>;
