@@ -75,11 +75,11 @@ struct recurse<i, vec, ishape, layerType, Args...> {
 
 template<typename... Args> class NetworkReal {};
 template<typename is_, typename os_, typename... Args> class NetworkReal<is_, os_, TypeStack<Args...>> {
-    constinit static inline std::tuple<Args...> layers{Args()...};
     NetworkReal(NetworkReal&) = delete;
     NetworkReal(const NetworkReal&);
     NetworkReal& operator=(const NetworkReal&);
   public:
+    constinit static inline std::tuple<Args...> layers{Args()...};
     using is = is_;
     using os = os_;
     consteval NetworkReal() = default;
